@@ -104,6 +104,25 @@ def classify_team_window(sessions):
         return [buckets["claude"], buckets["codex"], buckets["gemini"]]
     return None
 
+
+def looks_like_new_team_tab(sessions, old_ids):
+    """定位本次 start 刚创建的三 pane tab。
+
+    优先按 Claude/Codex/Gemini 名称识别；如果 pane 标题已被 shell / CLI / trust prompt
+    改写，则退化为“当前前台窗口 + 3 pane + 含新 session”的位置匹配。
+    """
+    if len(sessions) != 3:
+        return None
+
+    matched = classify_team_window(sessions)
+    if matched and any(s.session_id not in old_ids for s in matched):
+        return matched
+
+    if any(s.session_id not in old_ids for s in sessions):
+        return list(sessions)
+
+    return None
+
 async def kick_all():
     # 重新创建连接，确保能看到新窗口
     kick_conn = await iterm2.Connection().async_create()
@@ -113,19 +132,33 @@ async def kick_all():
     target = None
     for attempt in range(30):
         await asyncio.sleep(0.5)
-        app = await iterm2.async_get_app(conn)
+        app = await iterm2.async_get_app(kick_conn)
+
+        # 第一优先级：AppleScript 刚创建的窗口通常就是当前前台窗口
+        current_window = app.current_window
+        if current_window and current_window.current_tab:
+            current_sessions = current_window.current_tab.sessions
+            matched = looks_like_new_team_tab(current_sessions, old_ids)
+            if matched:
+                target = matched
+                log(
+                    f"Found current team window on attempt {attempt+1}, "
+                    f"names: {[s.name for s in matched]}, "
+                    f"sessions: {[s.session_id for s in matched]}"
+                )
+                break
+
         for w in app.windows:
             for tab in w.tabs:
                 sessions = tab.sessions
-                matched = classify_team_window(sessions)
+                matched = looks_like_new_team_tab(sessions, old_ids)
                 if not matched:
                     if len(sessions) == 3 and any(s.session_id not in old_ids for s in sessions):
                         log(f"Skipped non-team 3-pane window on attempt {attempt+1}: {[s.name for s in sessions]}")
                     continue
-                if any(s.session_id not in old_ids for s in matched):
-                    target = matched
-                    log(f"Found team window on attempt {attempt+1}, names: {[s.name for s in matched]}, sessions: {[s.session_id for s in matched]}")
-                    break
+                target = matched
+                log(f"Found team window on attempt {attempt+1}, names: {[s.name for s in matched]}, sessions: {[s.session_id for s in matched]}")
+                break
             if target:
                 break
         if target:

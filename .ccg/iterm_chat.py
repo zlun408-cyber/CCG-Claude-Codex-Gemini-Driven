@@ -32,6 +32,7 @@ import asyncio
 import iterm2
 import os
 import sys
+from pathlib import Path
 
 # ============================================================
 # Agent 识别: 关键词 -> pane 匹配规则
@@ -99,11 +100,39 @@ def _load_saved_sessions():
 
     这个文件由 start 脚本在启动时生成，记录了当前团队窗口的精确 session ID。
     """
-    # 从 CWD 往上找 .ccg/.sessions
-    cwd = os.getcwd()
-    path = os.path.join(cwd, '.ccg', '.sessions')
-    if not os.path.exists(path):
+    candidates = []
+
+    # 最高优先：与当前脚本同目录的 .sessions。
+    # 这样即使从子目录或绝对路径执行 /path/to/project/.ccg/iterm_chat.py，
+    # 也能读取到该项目自己的 session 记录。
+    try:
+        script_dir = Path(__file__).resolve().parent
+        candidates.append(script_dir / '.sessions')
+    except Exception:
+        pass
+
+    # 兼容旧行为：从 CWD 往上找 .ccg/.sessions。
+    try:
+        cwd = Path.cwd().resolve()
+        for base in (cwd, *cwd.parents):
+            candidates.append(base / '.ccg' / '.sessions')
+    except Exception:
+        pass
+
+    path = None
+    seen = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        if candidate.exists():
+            path = candidate
+            break
+
+    if path is None:
         return {}
+
     result = {}
     with open(path) as f:
         for line in f:
