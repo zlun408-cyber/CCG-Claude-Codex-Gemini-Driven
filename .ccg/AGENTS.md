@@ -1,7 +1,7 @@
 # AGENTS.md — Multi-Agent Collaboration Protocol
 
 > This file defines the collaboration protocol for the 3-agent iTerm2 development team.
-> Copy this file into any new project root. All agents should read it on session start.
+> Lives in .ccg/AGENTS.md. All agents should read it on session start (via CLAUDE.md).
 
 ## Team Members
 
@@ -51,29 +51,16 @@
    └→ Claude: review all changes, coordinate fixes, final verification
 ```
 
-## Communication (iterm_chat.py)
+## Communication (.ccg/iterm_chat.py)
 
 ```bash
-# Send message
-python3 iterm_chat.py say codex "message"
-# Gemini needs direct iTerm2 API (keyword detection doesn't match pane 3)
+# Send message (works for all agents including Gemini)
+python3 .ccg/iterm_chat.py say codex "message"
+python3 .ccg/iterm_chat.py say gemini "message"
 
 # Read screen
-python3 iterm_chat.py read codex [N]       # last N lines
-
-# Gemini direct send (use when iterm_chat.py can't find gemini)
-python3 -c "
-import asyncio, iterm2
-async def main():
-    conn = await iterm2.Connection().async_create()
-    app = await iterm2.async_get_app(conn)
-    sessions = app.current_window.current_tab.sessions
-    s = sessions[2]
-    await s.async_send_text('YOUR MESSAGE')
-    await asyncio.sleep(0.3)
-    await s.async_send_text('\r')
-asyncio.run(main())
-"
+python3 .ccg/iterm_chat.py read codex [N]       # last N lines
+python3 .ccg/iterm_chat.py read gemini [N]
 ```
 
 ## Task Format (for Codex)

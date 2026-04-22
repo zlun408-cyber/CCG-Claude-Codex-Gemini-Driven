@@ -94,16 +94,53 @@ def _get_own_session_id():
     return env
 
 
+def _load_saved_sessions():
+    """读取 .ccg/.sessions 文件，返回 {agent_name: session_id}。
+
+    这个文件由 start 脚本在启动时生成，记录了当前团队窗口的精确 session ID。
+    """
+    # 从 CWD 往上找 .ccg/.sessions
+    cwd = os.getcwd()
+    path = os.path.join(cwd, '.ccg', '.sessions')
+    if not os.path.exists(path):
+        return {}
+    result = {}
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if ':' in line:
+                agent, sid = line.split(':', 1)
+                result[agent.strip()] = sid.strip()
+    return result
+
+
 async def _find_team_window(connection, target_agent=None):
     """扫描所有 iTerm2 窗口，找到包含 Claude+Codex+Gemini 的团队窗口。
 
-    策略:
-    1. 最高优先：包含自身 session 的窗口（自己所在的窗口就是团队窗口）
+    策略 (按优先级):
+    0. 最高优先：通过 .ccg/.sessions 保存的精确 session ID 匹配
+    1. 次优先：包含自身 session 的窗口（自己所在的窗口就是团队窗口）
     2. 标准团队窗口：3 pane 且 3 个名字都匹配
     3. 有目标 agent 的窗口 +20 分
     4. 位置兜底保证 3 pane 总能匹配满
     """
     app = await iterm2.async_get_app(connection)
+
+    # 策略 0: 通过保存的 session ID 精准匹配
+    saved = _load_saved_sessions()
+    if saved:
+        for window in app.windows:
+            for tab in window.tabs:
+                agents = {}
+                for i, s in enumerate(tab.sessions):
+                    for agent_name, sid in saved.items():
+                        if sid in s.session_id or s.session_id.endswith(sid):
+                            agents[agent_name] = (i + 1, s)
+                            break
+                if len(agents) == len(saved):
+                    return tab, agents
+
+    # 策略 1+: 原有的名称 + 位置匹配逻辑
     own_sid = _get_own_session_id()
 
     best = None          # (score, tab, agents_dict)
@@ -214,21 +251,78 @@ async def cmd_send(connection, agent_name: str, text: str):
     await session.async_send_text(text)
 
 
-async def cmd_say(connection, agent_name: str, message: str):
-    """发送消息并提交。文本和 Enter 分开发送以兼容 Gemini TUI。"""
-    pane, session = await find_session(connection, agent_name)
-    await session.async_send_text(message)
+async def _is_gemini_in_shell_mode(session):
+    """检测 Gemini 是否误入了 shell mode。"""
+    import re
+    try:
+        content = await session.async_get_screen_contents()
+        raw = "\n".join(
+            content.line(j).string
+            for j in range(content.number_of_lines)
+        )
+        screen = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07|\x1b\[.*?m').sub('', raw)
+        return 'shell mode' in screen.lower() or '! ' in screen.split('\n')[-1]
+    except Exception:
+        return False
+
+
+async def _send_to_gemini(session, message):
+    """Gemini 专用发送：先 Escape 清状态 → 文本 → 延迟 → Enter → 检测 shell mode 自动恢复。"""
+    # 先发 Escape 确保 Gemini 回到主输入框
+    await session.async_send_text("\x1b")
     await asyncio.sleep(0.3)
+
+    # 发送消息文本
+    await session.async_send_text(message)
+    await asyncio.sleep(0.5)
+
+    # 发 Enter 提交
     await session.async_send_text("\r")
+    await asyncio.sleep(1.0)
+
+    # 检测是否误入 shell mode，如果是则退出
+    if await _is_gemini_in_shell_mode(session):
+        await session.async_send_text("exit\r")
+        await asyncio.sleep(0.5)
+        # 再试一次：Escape → 文本 → Enter
+        await session.async_send_text("\x1b")
+        await asyncio.sleep(0.3)
+        await session.async_send_text(message)
+        await asyncio.sleep(0.5)
+        await session.async_send_text("\r")
+        await asyncio.sleep(1.0)
+        # 最终检查
+        if await _is_gemini_in_shell_mode(session):
+            print("  [gemini] WARNING: still in shell mode after retry")
+
+
+async def cmd_say(connection, agent_name: str, message: str):
+    """发送消息并提交。Gemini 使用专用发送逻辑避免进入 shell mode。"""
+    resolved = resolve_agent(agent_name)
+    pane, session = await find_session(connection, agent_name)
+
+    if resolved == "gemini":
+        await _send_to_gemini(session, message)
+    else:
+        await session.async_send_text(message)
+        await asyncio.sleep(0.3)
+        await session.async_send_text("\r")
+
     print(f"[sent to {agent_name}] {message[:80]}")
 
 
 async def cmd_ask(connection, agent_name: str, question: str, wait_seconds: int = 15):
     """发送问题, 等待, 然后读取回复。"""
+    resolved = resolve_agent(agent_name)
     pane, session = await find_session(connection, agent_name)
-    await session.async_send_text(question)
-    await asyncio.sleep(0.3)
-    await session.async_send_text("\r")
+
+    if resolved == "gemini":
+        await _send_to_gemini(session, question)
+    else:
+        await session.async_send_text(question)
+        await asyncio.sleep(0.3)
+        await session.async_send_text("\r")
+
     print(f"[sent to {agent_name}] {question[:80]}")
     print(f"[waiting {wait_seconds}s...]")
     await asyncio.sleep(wait_seconds)

@@ -10,37 +10,44 @@ Multi-agent AI development team orchestrated in iTerm2. Three LLM-powered agents
 | **Codex** | GPT-5.4 | Backend Engineer |
 | **Gemini CLI** | Gemini 3 | Frontend Developer |
 
-## Quick Start
+## Usage
+
+### Add to your project
+
+Copy `.ccg/` and `start` into your project directory:
 
 ```bash
-# Prerequisites
-pip3 install iterm2
-
-# Launch the 3-pane team window (in the current directory)
-./start
-
-# Or specify a project directory
-./start /path/to/your/project
+cp -r .ccg /path/to/your-project/
+cp start /path/to/your-project/
 ```
 
-This opens an iTerm2 window with three vertical panes — Claude, Codex, and Gemini — each running in the target project directory.
+### Launch
 
-## Communication
+```bash
+cd /path/to/your-project
+./start
+```
 
-Agents talk to each other via `iterm_chat.py`:
+This opens an iTerm2 window with three vertical panes — Claude, Codex, and Gemini — each running in your project directory.
+
+If your project doesn't have a `CLAUDE.md`, `start` will auto-create one.
+
+### Communication
+
+Agents talk to each other via `.ccg/iterm_chat.py`:
 
 ```bash
 # List all panes
-python3 iterm_chat.py list
+python3 .ccg/iterm_chat.py list
 
 # Send a message
-python3 iterm_chat.py say codex "check main.py for bugs"
+python3 .ccg/iterm_chat.py say codex "check main.py for bugs"
 
 # Read an agent's screen
-python3 iterm_chat.py read gemini 25
+python3 .ccg/iterm_chat.py read gemini 25
 
 # Ask a question and wait for a reply
-python3 iterm_chat.py ask claude "what's the API contract?"
+python3 .ccg/iterm_chat.py ask claude "what's the API contract?"
 ```
 
 ## Workflow
@@ -55,15 +62,16 @@ Requirement → Claude (plan) → Codex (backend) → Contract frozen → Gemini
 4. **Gemini** builds the frontend against the frozen contract
 5. **Claude** reviews and integrates
 
-For full details, see [AGENTS.md](AGENTS.md).
+For full details, see [.ccg/AGENTS.md](.ccg/AGENTS.md).
 
 ## Project Structure
 
 ```
-├── start              # One-command launcher (AppleScript + iTerm2 API)
-├── iterm_chat.py      # Inter-agent communication bridge
-├── AGENTS.md          # Collaboration protocol and role definitions
-└── CLAUDE.md          # Claude Code session instructions
+├── start                  # One-command launcher
+├── CLAUDE.md              # Claude Code session instructions (auto-generated)
+└── .ccg/
+    ├── iterm_chat.py      # Inter-agent communication bridge
+    └── AGENTS.md          # Collaboration protocol and role definitions
 ```
 
 ## Requirements
