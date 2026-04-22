@@ -68,9 +68,14 @@ For full details, see [AGENTS.md](AGENTS.md).
 
 ## Requirements
 
-- macOS with iTerm2
+- **macOS with iTerm2 installed** (required — the entire communication layer depends on iTerm2's Python API)
+- **iTerm2 Python API must be enabled**:
+  1. Open iTerm2 → Settings (⌘,)
+  2. Go to **General → Magic**
+  3. Check **Python API**
+  4. Switch the Python API setting to **Allow All**
 - Claude Code, Codex CLI, Gemini CLI installed
-- Python 3 with `iterm2` package
+- Python 3 with `iterm2` package (`pip3 install iterm2`)
 
 ## License
 
