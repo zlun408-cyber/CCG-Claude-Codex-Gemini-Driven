@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+#
+# start - 一键拉起 Claude Code / Codex / Gemini 三 pane 窗口
+#
+# 用法: start [项目目录]
+#   不传目录则默认使用当前目录
+
+DIR="${1:-$PWD}"
+
+# Copy AGENTS.md to target project if it doesn't already have one
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ "$SCRIPT_DIR" != "$DIR" ] && [ ! -f "$DIR/AGENTS.md" ]; then
+    cp "$SCRIPT_DIR/AGENTS.md" "$DIR/AGENTS.md"
+    echo "Copied AGENTS.md → $DIR/"
+fi
+
+CLAUDE_B64=$(echo -n "Claude" | base64)
+CODEX_B64=$(echo -n "Codex" | base64)
+GEMINI_B64=$(echo -n "Gemini" | base64)
+
+# 生成并执行 AppleScript：创建窗口 + 延迟后自动按 Enter 跳过确认
+python3 - "$DIR" "$CLAUDE_B64" "$CODEX_B64" "$GEMINI_B64" << 'PYEOF'
+import sys, subprocess
+d, c, cx, g = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+
+script = f'''tell application "iTerm2"
+    set newWindow to (create window with default profile)
+
+    tell current session of newWindow
+        set name to "Claude"
+        write text "cd '{d}' && printf '\\\\033]1337;SetBadgeFormat={c}\\\\007' && claude" & return
+        -- Claude starts, will read AGENTS.md via CLAUDE.md hook
+        set codexSess to (split vertically with default profile)
+    end tell
+
+    tell codexSess
+        set name to "Codex"
+        write text "cd '{d}' && printf '\\\\033]1337;SetBadgeFormat={cx}\\\\007' && codex" & return
+        set geminiSess to (split vertically with default profile)
+    end tell
+
+    tell geminiSess
+        set name to "Gemini"
+        write text "cd '{d}' && printf '\\\\033]1337;SetBadgeFormat={g}\\\\007' && gemini" & return
+    end tell
+end tell
+'''
+
+subprocess.run(["osascript", "-e", script])
+
+# 自动确认：用 iTerm2 Python API 给新窗口的所有 pane 发 Enter
+import asyncio, iterm2
+
+async def kick_all():
+    conn = await iterm2.Connection().async_create()
+    app = await iterm2.async_get_app(conn)
+
+    # 收集已有窗口
+    old_ids = set()
+    for w in app.windows:
+        for s in w.current_tab.sessions:
+            old_ids.add(s.session_id)
+
+    # 等新窗口出现
+    target = None
+    for _ in range(20):
+        await asyncio.sleep(0.5)
+        app = await iterm2.async_get_app(conn)
+        for w in app.windows:
+            tab = w.current_tab
+            sessions = tab.sessions
+            if len(sessions) == 3 and any(s.session_id not in old_ids for s in sessions):
+                target = list(sessions)
+                break
+        if target:
+            break
+
+    if not target:
+        return
+
+    # 三轮 Enter，覆盖不同启动速度
+    for delay in [3, 3, 3]:
+        await asyncio.sleep(delay)
+        for s in target:
+            await s.async_send_text('\r')
+
+asyncio.run(kick_all())
+
+PYEOF
