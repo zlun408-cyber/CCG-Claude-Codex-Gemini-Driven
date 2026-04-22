@@ -81,6 +81,29 @@ log("Running AppleScript to create window...")
 subprocess.run(["osascript", "-e", script])
 log("AppleScript done, waiting for window to appear...")
 
+
+def normalize_session_name(name):
+    return re.sub(r'[^a-z0-9]+', ' ', name.lower()).strip()
+
+
+def classify_team_window(sessions):
+    if len(sessions) != 3:
+        return None
+
+    buckets = {"claude": None, "codex": None, "gemini": None}
+    for session in sessions:
+        normalized = normalize_session_name(session.name)
+        if "claude" in normalized and buckets["claude"] is None:
+            buckets["claude"] = session
+        elif "codex" in normalized and buckets["codex"] is None:
+            buckets["codex"] = session
+        elif "gemini" in normalized and buckets["gemini"] is None:
+            buckets["gemini"] = session
+
+    if all(buckets.values()):
+        return [buckets["claude"], buckets["codex"], buckets["gemini"]]
+    return None
+
 async def kick_all():
     # 重新创建连接，确保能看到新窗口
     kick_conn = await iterm2.Connection().async_create()
@@ -94,9 +117,14 @@ async def kick_all():
         for w in app.windows:
             for tab in w.tabs:
                 sessions = tab.sessions
-                if len(sessions) == 3 and any(s.session_id not in old_ids for s in sessions):
-                    target = list(sessions)
-                    log(f"Found team window on attempt {attempt+1}, sessions: {[s.session_id for s in sessions]}")
+                matched = classify_team_window(sessions)
+                if not matched:
+                    if len(sessions) == 3 and any(s.session_id not in old_ids for s in sessions):
+                        log(f"Skipped non-team 3-pane window on attempt {attempt+1}: {[s.name for s in sessions]}")
+                    continue
+                if any(s.session_id not in old_ids for s in matched):
+                    target = matched
+                    log(f"Found team window on attempt {attempt+1}, names: {[s.name for s in matched]}, sessions: {[s.session_id for s in matched]}")
                     break
             if target:
                 break
