@@ -12,16 +12,48 @@ Multi-agent AI development team orchestrated in iTerm2. Three LLM-powered agents
 
 ## Usage
 
-### Add to your project
+### Add to a project
 
-Copy `.ccg/` and `start` into your project directory:
+To use CCG in another project, copy the required launcher files into that project's root.
+
+Required:
+
+- `start`
+- the entire `.ccg/` directory
+
+Generated automatically:
+
+- `CLAUDE.md` — created by `./start` if it does not already exist
+
+Optional but recommended:
+
+- `.claude/` — copy this too if you want Claude Code to keep the same local permission/settings behavior as this template
+
+The target project should look like this:
+
+```text
+/path/to/your-project/
+├── start
+├── CLAUDE.md              # auto-created if missing
+├── .claude/               # optional, recommended for Claude Code settings
+└── .ccg/
+    ├── AGENTS.md
+    └── iterm_chat.py
+```
+
+Copy commands:
 
 ```bash
 cp -r .ccg /path/to/your-project/
 cp start /path/to/your-project/
+
+# Optional but recommended:
+cp -r .claude /path/to/your-project/
 ```
 
-### Launch
+Do **not** copy only `start` by itself. `start` depends on `.ccg/AGENTS.md` and `.ccg/iterm_chat.py`; cross-pane communication will not work without the `.ccg/` folder.
+
+After copying, launch CCG from inside the target project root:
 
 ```bash
 cd /path/to/your-project
@@ -30,7 +62,7 @@ cd /path/to/your-project
 
 This opens an iTerm2 window with three vertical panes — Claude, Codex, and Gemini — each running in your project directory.
 
-If your project doesn't have a `CLAUDE.md`, `start` will auto-create one.
+If your project does not have `CLAUDE.md`, `start` will auto-create one with instructions to read `.ccg/AGENTS.md` and use `.ccg/iterm_chat.py` for Codex/Gemini communication.
 
 ### Communication
 

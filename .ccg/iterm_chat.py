@@ -158,6 +158,7 @@ async def _find_team_window(connection, target_agent=None):
     # 策略 0: 通过保存的 session ID 精准匹配
     saved = _load_saved_sessions()
     if saved:
+        seen_saved = {}
         for window in app.windows:
             for tab in window.tabs:
                 agents = {}
@@ -165,9 +166,18 @@ async def _find_team_window(connection, target_agent=None):
                     for agent_name, sid in saved.items():
                         if sid in s.session_id or s.session_id.endswith(sid):
                             agents[agent_name] = (i + 1, s)
+                            seen_saved[agent_name] = s.session_id
                             break
                 if len(agents) == len(saved):
                     return tab, agents
+
+        missing = [agent for agent in saved if agent not in seen_saved]
+        print("Error: Saved CCG sessions were not found in iTerm2.")
+        print("  The .ccg/.sessions file is stale, or the CCG iTerm window was closed.")
+        if missing:
+            print(f"  Missing agents: {', '.join(missing)}")
+        print("  Fix: run ./start again from the project root to recreate the team window.")
+        sys.exit(1)
 
     # 策略 1+: 原有的名称 + 位置匹配逻辑
     own_sid = _get_own_session_id()

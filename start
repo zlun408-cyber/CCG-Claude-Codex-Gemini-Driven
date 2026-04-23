@@ -18,7 +18,10 @@ fi
 
 # 如果目标目录没有 CLAUDE.md，自动生成一个
 if [ ! -f "$DIR/CLAUDE.md" ]; then
-    echo "Read .ccg/AGENTS.md first on session start. Follow the collaboration protocol defined there." > "$DIR/CLAUDE.md"
+    cat > "$DIR/CLAUDE.md" <<'EOF'
+Read .ccg/AGENTS.md first on session start. Follow the collaboration protocol defined there.
+Use python3 .ccg/iterm_chat.py say|ask|read to coordinate with Codex and Gemini from this project root.
+EOF
     echo "Created CLAUDE.md → $DIR/"
 fi
 
@@ -28,7 +31,7 @@ GEMINI_B64=$(echo -n "Gemini" | base64)
 
 # 生成并执行 AppleScript：创建窗口 + 智能确认
 python3 - "$DIR" "$CLAUDE_B64" "$CODEX_B64" "$GEMINI_B64" << 'PYEOF'
-import sys, subprocess, os, asyncio, re, datetime
+import sys, subprocess, os, asyncio, re, datetime, traceback
 
 d, c, cx, g = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 LOG = os.path.join(d, '.ccg', 'kick.log')
@@ -43,16 +46,6 @@ def log(msg):
 log("=== start script beginning ===")
 
 import iterm2
-
-# 关键：在创建窗口之前先收集已有 session ID
-conn = asyncio.get_event_loop().run_until_complete(iterm2.Connection().async_create())
-app = asyncio.get_event_loop().run_until_complete(iterm2.async_get_app(conn))
-old_ids = set()
-for w in app.windows:
-    for tab in w.tabs:
-        for s in tab.sessions:
-            old_ids.add(s.session_id)
-log(f"Collected {len(old_ids)} existing session IDs before window creation")
 
 # 用 AppleScript 创建新窗口
 script = f'''tell application "iTerm2"
@@ -76,11 +69,6 @@ script = f'''tell application "iTerm2"
     end tell
 end tell
 '''
-
-log("Running AppleScript to create window...")
-subprocess.run(["osascript", "-e", script])
-log("AppleScript done, waiting for window to appear...")
-
 
 def normalize_session_name(name):
     return re.sub(r'[^a-z0-9]+', ' ', name.lower()).strip()
@@ -124,15 +112,25 @@ def looks_like_new_team_tab(sessions, old_ids):
     return None
 
 async def kick_all():
-    # 重新创建连接，确保能看到新窗口
-    kick_conn = await iterm2.Connection().async_create()
-    app = await iterm2.async_get_app(kick_conn)
+    # 仅建立一个连接，避免在部分环境中第二次连接挂起
+    conn = await iterm2.Connection().async_create()
+    app = await iterm2.async_get_app(conn)
+    old_ids = set()
+    for w in app.windows:
+        for tab in w.tabs:
+            for s in tab.sessions:
+                old_ids.add(s.session_id)
+    log(f"Collected {len(old_ids)} existing session IDs before window creation")
+
+    log("Running AppleScript to create window...")
+    subprocess.run(["osascript", "-e", script], check=True)
+    log("AppleScript done, waiting for window to appear...")
 
     # 等新窗口出现（old_ids 是窗口创建前收集的）
     target = None
     for attempt in range(30):
         await asyncio.sleep(0.5)
-        app = await iterm2.async_get_app(kick_conn)
+        app = await iterm2.async_get_app(conn)
 
         # 第一优先级：AppleScript 刚创建的窗口通常就是当前前台窗口
         current_window = app.current_window
@@ -266,6 +264,11 @@ async def kick_all():
     else:
         log("Reached max rounds, some panes may still need manual action")
 
-asyncio.run(kick_all())
+try:
+    asyncio.run(kick_all())
+except Exception:
+    log("ERROR: start script crashed")
+    log(traceback.format_exc())
+    raise
 
 PYEOF
