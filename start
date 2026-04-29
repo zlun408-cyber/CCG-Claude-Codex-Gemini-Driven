@@ -50,10 +50,7 @@ STARTUP_BROADCASTS = {
         '注意：这次只在当前窗口直接回复，不要使用 .ccg/iterm_chat.py，不要转发给 Claude。'
     ),
     'gemini': (
-        'Claude startup coordination: 你已经作为 Gemini pane 被拉起。'
-        '请在当前 Gemini 窗口直接展示你的身份、核心工作职责、主要负责的 UI/UX 范围、'
-        '以及需要 Claude 冻结哪些契约后你才开始实现。'
-        '注意：这次只在当前窗口直接回复，不要使用 .ccg/iterm_chat.py，不要转发给 Claude。'
+        'Gemini pane uses a static pane title/badge for startup identity display.'
     ),
     'codex2': (
         'Claude startup coordination: 你已经作为 Codex2 verification pane 被拉起。'
@@ -113,13 +110,13 @@ script = f'''tell application "iTerm2"
     set newWindow to (create window with default profile)
 
     tell current session of newWindow
-        set name to "Claude"
+        set name to "Claude Orchestrator"
         write text "bash '{d}/.ccg/launch_claude.sh' '{d}'" & return
         set rightTopSess to (split vertically with default profile)
     end tell
 
     tell rightTopSess
-        set name to "Codex"
+        set name to "Codex Engineer"
         write text "bash '{d}/.ccg/launch_codex.sh' '{d}'" & return
     end tell
 
@@ -128,7 +125,7 @@ script = f'''tell application "iTerm2"
     end tell
 
     tell leftBottomSess
-        set name to "Gemini"
+        set name to "Gemini UI/UX"
         write text "bash '{d}/.ccg/launch_gemini.sh' '{d}'" & return
     end tell
 
@@ -137,7 +134,7 @@ script = f'''tell application "iTerm2"
     end tell
 
     tell rightBottomSess
-        set name to "Codex2"
+        set name to "Codex2 Verification"
         write text "bash '{d}/.ccg/launch_codex2.sh' '{d}'" & return
     end tell
 end tell
@@ -320,6 +317,9 @@ async def kick_all():
 
     log('Claude startup coordination: asking ready panes to display identity and responsibilities...')
     for agent in ('claude', 'codex', 'gemini', 'codex2'):
+        if agent == 'gemini':
+            log('  [Claude → Gemini] skipped startup prompt; Gemini role is shown by pane title/badge')
+            continue
         if agent not in ready_agents:
             log(f'  [Claude → {DISPLAY_NAMES[agent]}] skipped startup message because pane is not ready')
             continue
