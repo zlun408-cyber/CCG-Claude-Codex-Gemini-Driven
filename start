@@ -142,7 +142,7 @@ end tell
 
 
 async def wait_for_team_tab(conn):
-    for attempt in range(30):
+    for attempt in range(90):
         await asyncio.sleep(0.5)
         stamped = read_session_stamps()
         if len(stamped) != len(AGENT_ORDER):
@@ -201,7 +201,7 @@ async def kick_all():
 
     target = await wait_for_team_tab(conn)
     if not target:
-        log('ERROR: Could not find team window after 15s')
+        log('ERROR: Could not find team window after 45s')
         return
 
     sessions_file = os.path.join(d, '.ccg', '.sessions')
@@ -223,7 +223,7 @@ async def kick_all():
         r'gpt-.*·',
         r'(^|\n)› ',
     ]
-    gemini_ready_patterns = [r'type your message', r'@path/to/file']
+    gemini_ready_patterns = [r'type your message', r'@path/to/file', r'gemini cli', r'quota', r'for shortcuts']
     codex_failed_patterns = [r'command not found', r'please restart codex']
     codex_launched = {agent: False for agent in ('codex', 'codex2')}
     ready_agents = set()
