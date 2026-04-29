@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# start - 一键拉起 Claude Code / Codex / Gemini 三 pane 窗口
+# start - 一键拉起 Claude / Codex / Gemini / Codex2 四 pane 窗口
 #
 # 用法: start [项目目录]
 #   不传目录则默认使用当前目录
@@ -9,265 +9,256 @@ DIR="${1:-$PWD}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CCG_DIR="$SCRIPT_DIR/.ccg"
 
-# 确保 .ccg/ 目录存在
 if [ ! -d "$CCG_DIR" ]; then
     echo "Error: .ccg/ directory not found at $CCG_DIR"
     echo "Make sure .ccg/ is next to this start script."
     exit 1
 fi
 
-# 如果目标目录没有 CLAUDE.md，自动生成一个
 if [ ! -f "$DIR/CLAUDE.md" ]; then
     cat > "$DIR/CLAUDE.md" <<'EOF'
 Read .ccg/AGENTS.md first on session start. Follow the collaboration protocol defined there.
-Use python3 .ccg/iterm_chat.py say|ask|read to coordinate with Codex and Gemini from this project root.
+Use python3 .ccg/iterm_chat.py say|ask|read to coordinate with Codex, Gemini, and Codex2 from this project root.
 EOF
     echo "Created CLAUDE.md → $DIR/"
 fi
 
-CLAUDE_B64=$(echo -n "Claude" | base64)
-CODEX_B64=$(echo -n "Codex" | base64)
-GEMINI_B64=$(echo -n "Gemini" | base64)
+python3 -u - "$DIR" << 'PYEOF'
+import sys, subprocess, os, asyncio, re, datetime, traceback, shutil
 
-# 生成并执行 AppleScript：创建窗口 + 智能确认
-python3 - "$DIR" "$CLAUDE_B64" "$CODEX_B64" "$GEMINI_B64" << 'PYEOF'
-import sys, subprocess, os, asyncio, re, datetime, traceback
-
-d, c, cx, g = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+d = sys.argv[1]
 LOG = os.path.join(d, '.ccg', 'kick.log')
+STAMP_DIR = os.path.join(d, '.ccg', '.pane_ids')
+AGENT_ORDER = ['claude', 'codex', 'gemini', 'codex2']
+DISPLAY_NAMES = {
+    'claude': 'Claude',
+    'codex': 'Codex',
+    'gemini': 'Gemini',
+    'codex2': 'Codex2',
+}
+
 
 def log(msg):
-    ts = datetime.datetime.now().strftime("%H:%M:%S")
-    line = f"[{ts}] {msg}"
-    print(line)
+    ts = datetime.datetime.now().strftime('%H:%M:%S')
+    line = f'[{ts}] {msg}'
+    print(line, flush=True)
     with open(LOG, 'a') as f:
-        f.write(line + "\n")
+        f.write(line + '\n')
 
-log("=== start script beginning ===")
+
+def strip_ansi(text):
+    return re.compile(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07|\x1b\[.*?m').sub('', text)
+
+
+async def screen_text(session):
+    content = await session.async_get_screen_contents()
+    raw = '\n'.join(content.line(j).string for j in range(content.number_of_lines))
+    return strip_ansi(raw)
+
+
+def read_session_stamps():
+    result = {}
+    for agent in AGENT_ORDER:
+        path = os.path.join(STAMP_DIR, f'{agent}.session')
+        if not os.path.exists(path):
+            continue
+        try:
+            sid = open(path).read().strip()
+        except OSError:
+            continue
+        if sid:
+            result[agent] = sid
+    return result
+
+
+log('=== start script beginning ===')
 
 import iterm2
 
-# 用 AppleScript 创建新窗口
 script = f'''tell application "iTerm2"
     set newWindow to (create window with default profile)
 
     tell current session of newWindow
         set name to "Claude"
-        write text "cd '{d}' && printf '\\\\033]1337;SetBadgeFormat={c}\\\\007' && claude" & return
-        set codexSess to (split vertically with default profile)
+        write text "bash '{d}/.ccg/launch_claude.sh' '{d}'" & return
+        set rightTopSess to (split vertically with default profile)
     end tell
 
-    tell codexSess
+    tell rightTopSess
         set name to "Codex"
-        write text "cd '{d}' && printf '\\\\033]1337;SetBadgeFormat={cx}\\\\007' && codex" & return
-        set geminiSess to (split vertically with default profile)
+        write text "bash '{d}/.ccg/launch_codex.sh' '{d}'" & return
     end tell
 
-    tell geminiSess
+    tell current session of newWindow
+        set leftBottomSess to (split horizontally with default profile)
+    end tell
+
+    tell leftBottomSess
         set name to "Gemini"
-        write text "cd '{d}' && printf '\\\\033]1337;SetBadgeFormat={g}\\\\007' && gemini" & return
+        write text "bash '{d}/.ccg/launch_gemini.sh' '{d}'" & return
+    end tell
+
+    tell rightTopSess
+        set rightBottomSess to (split horizontally with default profile)
+    end tell
+
+    tell rightBottomSess
+        set name to "Codex2"
+        write text "bash '{d}/.ccg/launch_codex2.sh' '{d}'" & return
     end tell
 end tell
 '''
 
-def normalize_session_name(name):
-    return re.sub(r'[^a-z0-9]+', ' ', name.lower()).strip()
 
-
-def classify_team_window(sessions):
-    if len(sessions) != 3:
-        return None
-
-    buckets = {"claude": None, "codex": None, "gemini": None}
-    for session in sessions:
-        normalized = normalize_session_name(session.name)
-        if "claude" in normalized and buckets["claude"] is None:
-            buckets["claude"] = session
-        elif "codex" in normalized and buckets["codex"] is None:
-            buckets["codex"] = session
-        elif "gemini" in normalized and buckets["gemini"] is None:
-            buckets["gemini"] = session
-
-    if all(buckets.values()):
-        return [buckets["claude"], buckets["codex"], buckets["gemini"]]
-    return None
-
-
-def looks_like_new_team_tab(sessions, old_ids):
-    """定位本次 start 刚创建的三 pane tab。
-
-    优先按 Claude/Codex/Gemini 名称识别；如果 pane 标题已被 shell / CLI / trust prompt
-    改写，则退化为“当前前台窗口 + 3 pane + 含新 session”的位置匹配。
-    """
-    if len(sessions) != 3:
-        return None
-
-    matched = classify_team_window(sessions)
-    if matched and any(s.session_id not in old_ids for s in matched):
-        return matched
-
-    if any(s.session_id not in old_ids for s in sessions):
-        return list(sessions)
-
-    return None
-
-async def kick_all():
-    # 仅建立一个连接，避免在部分环境中第二次连接挂起
-    conn = await iterm2.Connection().async_create()
-    app = await iterm2.async_get_app(conn)
-    old_ids = set()
-    for w in app.windows:
-        for tab in w.tabs:
-            for s in tab.sessions:
-                old_ids.add(s.session_id)
-    log(f"Collected {len(old_ids)} existing session IDs before window creation")
-
-    log("Running AppleScript to create window...")
-    subprocess.run(["osascript", "-e", script], check=True)
-    log("AppleScript done, waiting for window to appear...")
-
-    # 等新窗口出现（old_ids 是窗口创建前收集的）
-    target = None
+async def wait_for_team_tab(conn):
     for attempt in range(30):
         await asyncio.sleep(0.5)
+        stamped = read_session_stamps()
+        if len(stamped) != len(AGENT_ORDER):
+            log(
+                f'Attempt {attempt+1}: waiting for pane session stamps '
+                f'({len(stamped)}/{len(AGENT_ORDER)})'
+            )
+            continue
+
         app = await iterm2.async_get_app(conn)
-
-        # 第一优先级：AppleScript 刚创建的窗口通常就是当前前台窗口
-        current_window = app.current_window
-        if current_window and current_window.current_tab:
-            current_sessions = current_window.current_tab.sessions
-            matched = looks_like_new_team_tab(current_sessions, old_ids)
-            if matched:
-                target = matched
-                log(
-                    f"Found current team window on attempt {attempt+1}, "
-                    f"names: {[s.name for s in matched]}, "
-                    f"sessions: {[s.session_id for s in matched]}"
-                )
-                break
-
         for w in app.windows:
             for tab in w.tabs:
-                sessions = tab.sessions
-                matched = looks_like_new_team_tab(sessions, old_ids)
-                if not matched:
-                    if len(sessions) == 3 and any(s.session_id not in old_ids for s in sessions):
-                        log(f"Skipped non-team 3-pane window on attempt {attempt+1}: {[s.name for s in sessions]}")
+                sessions = list(tab.sessions)
+                if len(sessions) != 4:
                     continue
-                target = matched
-                log(f"Found team window on attempt {attempt+1}, names: {[s.name for s in matched]}, sessions: {[s.session_id for s in matched]}")
-                break
-            if target:
-                break
-        if target:
-            break
+                found = {agent: None for agent in AGENT_ORDER}
+                for s in sessions:
+                    for agent, sid in stamped.items():
+                        if s.session_id == sid:
+                            found[agent] = s
+                            break
+                if all(found.values()):
+                    log(
+                        f"Found team tab on attempt {attempt+1}, "
+                        f"names: {[found[k].name for k in AGENT_ORDER]}, "
+                        f"sessions: {[found[k].session_id for k in AGENT_ORDER]}"
+                    )
+                    return found
 
+        log(
+            f'Attempt {attempt+1}: have full stamps but exact team tab not ready yet; '
+            f'stamped sessions={[stamped[a] for a in AGENT_ORDER]}'
+        )
+
+    return None
+
+
+async def kick_all():
+    conn = await iterm2.Connection().async_create()
+    app = await iterm2.async_get_app(conn)
+    old_ids = [
+        s.session_id
+        for w in app.windows
+        for tab in w.tabs
+        for s in tab.sessions
+    ]
+    log(f'Collected {len(old_ids)} existing session IDs before window creation')
+
+    shutil.rmtree(STAMP_DIR, ignore_errors=True)
+    os.makedirs(STAMP_DIR, exist_ok=True)
+    log(f'Reset pane session stamp dir → {STAMP_DIR}')
+
+    log('Running AppleScript to create window...')
+    subprocess.run(['osascript', '-e', script], check=True)
+    log('AppleScript done, waiting for window to appear...')
+
+    target = await wait_for_team_tab(conn)
     if not target:
-        log("ERROR: Could not find team window after 15s")
+        log('ERROR: Could not find team window after 15s')
         return
 
-    # 保存 session ID，供 iterm_chat.py 精准定位
     sessions_file = os.path.join(d, '.ccg', '.sessions')
-    names = ['claude', 'codex', 'gemini']
     with open(sessions_file, 'w') as f:
-        for name, s in zip(names, target):
-            f.write(f"{name}:{s.session_id}\n")
-    log(f"Saved session IDs → {sessions_file}")
+        for agent in AGENT_ORDER:
+            f.write(f"{agent}:{target[agent].session_id}\n")
+    log(f'Saved session IDs → {sessions_file}')
 
-    # 智能确认：读屏幕内容，检测确认提示，按需发送正确按键
-    def strip_ansi(text):
-        """去除 ANSI 转义码，只保留纯文本。"""
-        return re.compile(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07|\x1b\[.*?m').sub('', text)
-
-    # 需要自动同意的关键词（信任确认、升级提示等）
-    PROMPT_PATTERNS = [
-        r'trust',
-        r'agree',
-        r'accept',
-        r'continue',
-        r'\byes\b',
-        r'confirm',
-        r'press enter',
-        r'update',
-        r'upgrade',
-        r'enter to confirm',
+    prompt_patterns = [
+        r'trust', r'agree', r'accept', r'continue', r'\byes\b',
+        r'confirm', r'press enter', r'update', r'upgrade', r'enter to confirm',
     ]
+    generic_ready_patterns = [r'shift\+tab', r'shell mode']
+    codex_ready_patterns = [r'\? for shortcuts', r'try ".*"', r'esc to interrupt', r'ideas? try']
+    shell_patterns = [r'command not found', r'git:\(.*\)', r'^➜', r'^% ', r'^\$ ', r'please restart codex']
 
-    # 已经就绪的关键词（说明不需要任何操作）
-    READY_PATTERNS = [
-        r'shift\+tab',
-        r'shell mode',
-    ]
-
-    pane_names = ['Claude', 'Codex', 'Gemini']
-
-    for round_num in range(5):  # 最多 5 轮
+    for round_num in range(8):
         await asyncio.sleep(5)
         all_ready = True
 
-        for i, s in enumerate(target):
-            is_gemini = (i == 2)
+        for agent in AGENT_ORDER:
+            session = target[agent]
+            label = DISPLAY_NAMES[agent]
+            is_claude = (agent == 'claude')
+            is_gemini = (agent == 'gemini')
+            is_codex_like = (agent in ('codex', 'codex2'))
 
             try:
-                content = await s.async_get_screen_contents()
-                raw = "\n".join(
-                    content.line(j).string
-                    for j in range(content.number_of_lines)
-                )
-                screen = strip_ansi(raw)
+                screen = (await screen_text(session)).lower()
             except Exception as e:
-                log(f"  [{pane_names[i]}] read failed: {e}")
+                log(f'  [{label}] read failed: {e}')
                 continue
 
-            screen_lower = screen.lower()
-
-            # 调试：记录最后几行
             last_lines = [l.strip() for l in screen.split('\n')[-5:] if l.strip()]
-            log(f"  [{pane_names[i]}] round {round_num+1} last: {last_lines[:3]}")
+            log(f'  [{label}] round {round_num+1} last: {last_lines[:3]}')
 
-            # 如果已经在就绪状态，跳过
-            if any(re.search(p, screen_lower) for p in READY_PATTERNS):
-                log(f"  [{pane_names[i]}] already ready, skipping")
+            # Claude 交互式启动链路对“自动 Enter / 自动确认”比较敏感。
+            # 这里不再主动干预 Claude，只做观察，避免把会话推进到异常状态。
+            if is_claude:
+                log(f'  [{label}] skipping auto-input to avoid interfering with Claude startup')
                 continue
 
-            # Gemini 已就绪但没匹配到 READY 关键词 → 也跳过，不乱发按键
-            if is_gemini and round_num >= 1:
-                # 第二轮起，如果 Gemini 没有 prompt 关键词，不发送任何东西
-                if not any(re.search(p, screen_lower) for p in PROMPT_PATTERNS):
-                    log(f"  [{pane_names[i]}] Gemini no prompt, skipping to avoid shell mode")
+            if is_codex_like:
+                if any(re.search(p, screen) for p in codex_ready_patterns):
+                    log(f'  [{label}] Codex ready, skipping')
+                    continue
+                if any(re.search(p, screen, re.MULTILINE) for p in shell_patterns):
+                    all_ready = False
+                    await session.async_send_text('codex\r')
+                    log(f'  [{label}] detected shell fallback → relaunched codex')
                     continue
 
-            # 检测是否有确认提示
-            if any(re.search(p, screen_lower) for p in PROMPT_PATTERNS):
+            if any(re.search(p, screen) for p in generic_ready_patterns):
+                log(f'  [{label}] already ready, skipping')
+                continue
+
+            if is_gemini and round_num >= 1 and not any(re.search(p, screen) for p in prompt_patterns):
+                log(f'  [{label}] Gemini no prompt, skipping to avoid shell mode')
+                continue
+
+            if any(re.search(p, screen) for p in prompt_patterns):
                 all_ready = False
                 if is_gemini:
-                    # Gemini: 先 Escape 再操作，避免进入 shell mode
-                    await s.async_send_text('\x1b')
+                    await session.async_send_text('\x1b')
                     await asyncio.sleep(0.3)
-                await s.async_send_text('1')
+                await session.async_send_text('1')
                 await asyncio.sleep(0.3)
-                await s.async_send_text('\r')
-                log(f"  [{pane_names[i]}] detected prompt → sent '1 + Enter'")
+                await session.async_send_text('\r')
+                log(f"  [{label}] detected prompt → sent '1 + Enter'")
             else:
-                # 没检测到提示词，也没就绪
                 if is_gemini:
-                    # Gemini 不发 Enter，避免触发 shell mode
-                    log(f"  [{pane_names[i]}] Gemini: no prompt, not sending Enter (avoid shell mode)")
+                    log(f'  [{label}] Gemini: no prompt, not sending Enter (avoid shell mode)')
                 else:
                     all_ready = False
-                    await s.async_send_text('\r')
-                    log(f"  [{pane_names[i]}] no prompt detected → sent Enter")
+                    await session.async_send_text('\r')
+                    log(f'  [{label}] no prompt detected → sent Enter')
 
         if all_ready:
-            log("All panes ready!")
+            log('All panes ready!')
             break
     else:
-        log("Reached max rounds, some panes may still need manual action")
+        log('Reached max rounds, some panes may still need manual action')
+
 
 try:
     asyncio.run(kick_all())
 except Exception:
-    log("ERROR: start script crashed")
+    log('ERROR: start script crashed')
     log(traceback.format_exc())
     raise
 

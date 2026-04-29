@@ -3,35 +3,40 @@
 iTerm2 Multi-Agent Chat Bridge
 ===============================
 放到任意项目目录下即可使用。通过 iTerm2 Python API 实现
-Claude Code / Codex / Gemini 三个 pane 之间的双向通信。
+Claude Code / Codex / Gemini / Codex2 四个 pane 之间的双向通信。
 
 依赖: pip3 install iterm2
 
 用法:
   python3 iterm_chat.py list                      列出所有 pane
-  python3 iterm_chat.py read <agent> [N]          读取 agent 屏幕最近 N 行 (默认 40)
+  python3 iterm_chat.py read <agent> [N]          读取 agent 最近内容 (默认 40)
   python3 iterm_chat.py send <agent> <text>       发送原始文本 (无 Enter)
   python3 iterm_chat.py say <agent> <text>        发送消息并提交 (自动 Enter)
   python3 iterm_chat.py ask <agent> <question>    发送问题, 等待回复, 打印结果
 
-  <agent> 可以是: claude / codex / gemini / 1 / 2 / 3
+  <agent> 可以是: claude / codex / gemini / codex2 / 1 / 2 / 3 / 4
 
 示例:
   python3 iterm_chat.py say codex "帮我检查 main.py 有没有 bug"
+  python3 iterm_chat.py say codex2 "运行回归测试并汇报结果"
   python3 iterm_chat.py ask gemini "解释一下这个正则: ^(?=.*[A-Z]).{8,}$"
   python3 iterm_chat.py read codex
-  python3 iterm_chat.py read gemini 25
+  python3 iterm_chat.py read codex2 25
 
 注意:
   - Gemini 的 TUI 会吞掉紧跟文本发送的 Enter, 所以文本和 Enter 之间有 0.3s 延迟
-  - 读取只能看到当前屏幕缓冲区, 滚出屏幕的内容无法获取
+  - Claude/Codex 读取当前屏幕缓冲区；Gemini 读取其 chat jsonl 历史，避免 TUI 不显示历史导致误判
   - 如果 Gemini 进入了 shell mode, 先发送 Escape 退出: ./iterm_chat.py send gemini $'\\x1b'
 """
 
 import asyncio
 import iterm2
+import json
 import os
+import re
 import sys
+import time
+from datetime import datetime
 from pathlib import Path
 
 # ============================================================
@@ -41,16 +46,24 @@ AGENT_KEYWORDS = {
     "claude": ["claude"],
     "codex":  ["codex"],
     "gemini": ["gemini"],
+    "codex2": ["codex2"],
+}
+
+AGENT_BADGES = {
+    "claude": ["claude"],
+    "codex": ["codex"],
+    "gemini": ["gemini"],
+    "codex2": ["codex2"],
 }
 
 AGENT_ALIASES = {
-    "1": "claude", "2": "codex", "3": "gemini",
-    "c": "claude", "cx": "codex", "g": "gemini",
+    "1": "claude", "2": "codex", "3": "gemini", "4": "codex2",
+    "c": "claude", "cx": "codex", "g": "gemini", "cx2": "codex2",
 }
 
 
 def resolve_agent(name: str) -> str:
-    """将用户输入的 agent 名解析为标准名 (claude/codex/gemini)。"""
+    """将用户输入的 agent 名解析为标准名 (claude/codex/gemini/codex2)。"""
     key = name.lower().strip()
     if key in AGENT_ALIASES:
         return AGENT_ALIASES[key]
@@ -64,25 +77,33 @@ def resolve_agent(name: str) -> str:
 
 
 def _classify_sessions(sessions):
-    """对一组 sessions 按名称分类，返回 {agent_name: (pane_index, session)}。
-
-    先按名称关键词匹配，未匹配的 pane 按位置兜底：
-    Pane 1 = claude, Pane 2 = codex, Pane 3 = gemini
-    """
+    """对一组 sessions 按名称分类，返回 {agent_name: (pane_index, session)}。"""
     agents = {}
+
+    def session_text(session):
+        parts = [session.name.lower()]
+        badge = getattr(session, "badge", None)
+        if badge:
+            parts.append(str(badge).lower())
+        return " ".join(parts)
+
     for i, s in enumerate(sessions):
         pane = i + 1
-        name_lower = s.name.lower()
-        for agent_name, keywords in AGENT_KEYWORDS.items():
-            if any(kw in name_lower for kw in keywords):
-                agents[agent_name] = (pane, s)
-                break
-    # 位置兜底
-    if len(sessions) >= 3 and len(agents) < 3:
-        position_map = {0: "claude", 1: "codex", 2: "gemini"}
-        for idx, agent_name in position_map.items():
-            if agent_name not in agents:
-                agents[agent_name] = (idx + 1, sessions[idx])
+        text = session_text(s)
+
+        if "codex2" in text and "codex2" not in agents:
+            agents["codex2"] = (pane, s)
+            continue
+        if "claude" in text and "claude" not in agents:
+            agents["claude"] = (pane, s)
+            continue
+        if "gemini" in text and "gemini" not in agents:
+            agents["gemini"] = (pane, s)
+            continue
+        if "codex" in text and "codex" not in agents:
+            agents["codex"] = (pane, s)
+            continue
+
     return agents
 
 
@@ -143,15 +164,126 @@ def _load_saved_sessions():
     return result
 
 
+def _project_root():
+    """Return the project root that owns this .ccg directory."""
+    try:
+        return Path(__file__).resolve().parent.parent
+    except Exception:
+        return Path.cwd().resolve()
+
+
+def _gemini_project_dir():
+    """Locate Gemini's per-project tmp directory for this project."""
+    root = _project_root().resolve()
+    tmp_root = Path.home() / ".gemini" / "tmp"
+
+    if tmp_root.exists():
+        for candidate in tmp_root.iterdir():
+            marker = candidate / ".project_root"
+            if not marker.exists():
+                continue
+            try:
+                marked = Path(marker.read_text().strip()).resolve()
+            except Exception:
+                continue
+            if marked == root:
+                return candidate
+
+    slug = re.sub(r"[^a-z0-9]+", "-", root.name.lower()).strip("-")
+    return tmp_root / slug
+
+
+def _latest_gemini_chat_file():
+    chat_dir = _gemini_project_dir() / "chats"
+    if not chat_dir.exists():
+        return None
+    files = list(chat_dir.glob("session-*.jsonl"))
+    if not files:
+        return None
+    return max(files, key=lambda p: p.stat().st_mtime)
+
+
+def _event_text(event):
+    content = event.get("content", "")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict) and item.get("text"):
+                parts.append(str(item["text"]))
+        return "\n".join(parts)
+    return ""
+
+
+def _event_epoch(event):
+    value = event.get("timestamp")
+    if not value:
+        return 0.0
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
+
+
+def _read_gemini_events():
+    path = _latest_gemini_chat_file()
+    if path is None:
+        return []
+
+    events = []
+    with open(path) as f:
+        for line in f:
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict) or "$set" in event:
+                continue
+            if event.get("type") in ("user", "gemini", "info"):
+                events.append(event)
+    return events
+
+
+def _format_gemini_events(limit=20):
+    events = _read_gemini_events()[-limit:]
+    if not events:
+        return None
+
+    lines = []
+    for event in events:
+        ts = event.get("timestamp", "")
+        clock = ts[11:19] if len(ts) >= 19 else "--:--:--"
+        role = event.get("type", "unknown")
+        text = _event_text(event).strip()
+        if text:
+            lines.append(f"[{clock}] {role}: {text}")
+    return "\n\n".join(lines) if lines else None
+
+
+async def _wait_for_gemini_response(started_at, timeout_seconds):
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        for event in reversed(_read_gemini_events()):
+            if event.get("type") != "gemini":
+                continue
+            if _event_epoch(event) >= started_at - 1:
+                text = _event_text(event).strip()
+                if text:
+                    return text
+        await asyncio.sleep(1)
+    return None
+
+
 async def _find_team_window(connection, target_agent=None):
-    """扫描所有 iTerm2 窗口，找到包含 Claude+Codex+Gemini 的团队窗口。
+    """扫描所有 iTerm2 窗口，找到包含 Claude+Codex+Gemini+Codex2 的团队窗口。
 
     策略 (按优先级):
     0. 最高优先：通过 .ccg/.sessions 保存的精确 session ID 匹配
     1. 次优先：包含自身 session 的窗口（自己所在的窗口就是团队窗口）
-    2. 标准团队窗口：3 pane 且 3 个名字都匹配
+    2. 标准团队窗口：4 pane 且 4 个名字都匹配
     3. 有目标 agent 的窗口 +20 分
-    4. 位置兜底保证 3 pane 总能匹配满
+    4. 位置兜底保证 4 pane 总能匹配满
     """
     app = await iterm2.async_get_app(connection)
 
@@ -190,8 +322,10 @@ async def _find_team_window(connection, target_agent=None):
             agents = _classify_sessions(sessions)
 
             # 基础分
-            if len(sessions) == 3 and len(agents) == 3:
+            if len(sessions) == 4 and len(agents) == 4:
                 score = 100
+            elif len(agents) >= 3:
+                score = 60 + len(agents) * 5
             elif len(agents) >= 2:
                 score = 30 + len(agents) * 5
             elif len(agents) == 1:
@@ -274,6 +408,13 @@ async def cmd_list(connection):
 
 
 async def cmd_read(connection, agent_name: str, last_n: int = 40):
+    resolved = resolve_agent(agent_name)
+    if resolved == "gemini":
+        transcript = _format_gemini_events(last_n)
+        if transcript:
+            print(transcript)
+            return
+
     pane, session = await find_session(connection, agent_name)
     content = await session.async_get_screen_contents()
     n = content.number_of_lines
@@ -292,7 +433,6 @@ async def cmd_send(connection, agent_name: str, text: str):
 
 async def _is_gemini_in_shell_mode(session):
     """检测 Gemini 是否误入了 shell mode。"""
-    import re
     try:
         content = await session.async_get_screen_contents()
         raw = "\n".join(
@@ -356,14 +496,24 @@ async def cmd_ask(connection, agent_name: str, question: str, wait_seconds: int 
     pane, session = await find_session(connection, agent_name)
 
     if resolved == "gemini":
+        started_at = time.time()
         await _send_to_gemini(session, question)
     else:
+        started_at = None
         await session.async_send_text(question)
         await asyncio.sleep(0.3)
         await session.async_send_text("\r")
 
     print(f"[sent to {agent_name}] {question[:80]}")
     print(f"[waiting {wait_seconds}s...]")
+
+    if resolved == "gemini":
+        response = await _wait_for_gemini_response(started_at, wait_seconds)
+        if response:
+            print("--- response ---")
+            print(response)
+            return
+
     await asyncio.sleep(wait_seconds)
 
     content = await session.async_get_screen_contents()

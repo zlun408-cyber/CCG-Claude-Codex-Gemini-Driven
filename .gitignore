@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 .ccg/kick.log
 .ccg/.sessions
+.ccg/.pane_ids/
+.ccg/claude_gateway_proxy.log
+.ccg/claude_runtime_settings.json
