@@ -36,6 +36,23 @@ DISPLAY_NAMES = {
     'gemini': 'Gemini',
     'codex2': 'Codex2',
 }
+STARTUP_BROADCASTS = {
+    'codex': (
+        'Claude startup coordination: 你已经作为 Codex pane 被拉起。'
+        '请向 Claude 简要说明你的身份、核心工作职责、主要负责的文件/任务类型、'
+        '以及你在遇到 blocker 或完成任务时会如何汇报。'
+    ),
+    'gemini': (
+        'Claude startup coordination: 你已经作为 Gemini pane 被拉起。'
+        '请向 Claude 简要说明你的身份、核心工作职责、主要负责的 UI/UX 范围、'
+        '以及需要 Claude 冻结哪些契约后你才开始实现。'
+    ),
+    'codex2': (
+        'Claude startup coordination: 你已经作为 Codex2 verification pane 被拉起。'
+        '请向 Claude 简要说明你的身份、核心工作职责、验证范围、'
+        '以及你会如何报告测试命令、结果、风险和建议。'
+    ),
+}
 
 
 def log(msg):
@@ -54,6 +71,19 @@ async def screen_text(session):
     content = await session.async_get_screen_contents()
     raw = '\n'.join(content.line(j).string for j in range(content.number_of_lines))
     return strip_ansi(raw)
+
+
+async def send_startup_message(agent, session):
+    message = STARTUP_BROADCASTS[agent]
+    if agent == 'gemini':
+        # Gemini may still be in an onboarding/prompt state; Escape keeps this
+        # from being interpreted as shell input in most TUI states.
+        await session.async_send_text('\x1b')
+        await asyncio.sleep(0.3)
+    await session.async_send_text(message)
+    await asyncio.sleep(0.3)
+    await session.async_send_text('\r')
+    log(f"  [Claude → {DISPLAY_NAMES[agent]}] startup identity request sent")
 
 
 def read_session_stamps():
@@ -261,6 +291,14 @@ async def kick_all():
             break
     else:
         log('Reached max rounds, some panes may still need manual action')
+
+    log('Claude startup coordination: asking teammates to state identity and responsibilities...')
+    for agent in ('codex', 'gemini', 'codex2'):
+        try:
+            await send_startup_message(agent, target[agent])
+            await asyncio.sleep(0.8)
+        except Exception as e:
+            log(f'  [Claude → {DISPLAY_NAMES[agent]}] startup message failed: {e}')
 
 
 try:
