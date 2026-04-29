@@ -84,11 +84,6 @@ async def screen_text(session):
 
 async def send_startup_message(agent, session):
     message = STARTUP_BROADCASTS[agent]
-    if agent == 'gemini':
-        # Gemini may still be in an onboarding/prompt state; Escape keeps this
-        # from being interpreted as shell input in most TUI states.
-        await session.async_send_text('\x1b')
-        await asyncio.sleep(0.3)
     await session.async_send_text(message)
     await asyncio.sleep(0.3)
     await session.async_send_text('\r')
@@ -223,8 +218,18 @@ async def kick_all():
         r'confirm', r'press enter', r'update', r'upgrade', r'enter to confirm',
     ]
     generic_ready_patterns = [r'shift\+tab', r'shell mode']
-    codex_ready_patterns = [r'\? for shortcuts', r'try ".*"', r'esc to interrupt', r'ideas? try']
-    shell_patterns = [r'command not found', r'git:\(.*\)', r'^➜', r'^% ', r'^\$ ', r'please restart codex']
+    codex_ready_patterns = [
+        r'\? for shortcuts',
+        r'try ".*"',
+        r'esc to interrupt',
+        r'ideas? try',
+        r'gpt-.*·',
+        r'(^|\n)› ',
+    ]
+    gemini_ready_patterns = [r'type your message', r'@path/to/file']
+    codex_failed_patterns = [r'command not found', r'please restart codex']
+    codex_launched = {agent: False for agent in ('codex', 'codex2')}
+    ready_agents = set()
 
     for round_num in range(8):
         await asyncio.sleep(5)
@@ -257,43 +262,55 @@ async def kick_all():
                     await session.async_send_text('\r')
                     log(f"  [{label}] API key prompt → sent '1 + Enter'")
                 else:
+                    ready_agents.add(agent)
                     log(f'  [{label}] skipping auto-input to avoid interfering with Claude startup')
                 continue
 
             if is_codex_like:
                 if any(re.search(p, screen) for p in codex_ready_patterns):
+                    ready_agents.add(agent)
                     log(f'  [{label}] Codex ready, skipping')
                     continue
-                if any(re.search(p, screen, re.MULTILINE) for p in shell_patterns):
+                if any(re.search(p, screen, re.MULTILINE) for p in codex_failed_patterns):
                     all_ready = False
-                    await session.async_send_text('codex\r')
-                    log(f'  [{label}] detected shell fallback → relaunched codex')
+                    if not codex_launched[agent]:
+                        codex_launched[agent] = True
+                        await session.async_send_text('codex\r')
+                        log(f'  [{label}] detected failed launch → relaunched codex once')
+                    else:
+                        log(f'  [{label}] launch still failing, not relaunching again')
+                    continue
+                if 'codex' in screen:
+                    all_ready = False
+                    log(f'  [{label}] Codex appears to be launching, not sending duplicate input')
                     continue
 
             if any(re.search(p, screen) for p in generic_ready_patterns):
+                ready_agents.add(agent)
                 log(f'  [{label}] already ready, skipping')
                 continue
 
-            if is_gemini and round_num >= 1 and not any(re.search(p, screen) for p in prompt_patterns):
-                log(f'  [{label}] Gemini no prompt, skipping to avoid shell mode')
+            # Gemini's TUI redraws aggressively during onboarding/auth. Do not
+            # send automatic Escape/Enter/confirm keys here; it causes visible
+            # flicker and can bounce the UI between states.
+            if is_gemini:
+                if any(re.search(p, screen) for p in gemini_ready_patterns):
+                    ready_agents.add(agent)
+                    log(f'  [{label}] Gemini ready, skipping')
+                    continue
+                all_ready = False
+                log(f'  [{label}] observing only during startup to avoid TUI flicker')
                 continue
 
             if any(re.search(p, screen) for p in prompt_patterns):
                 all_ready = False
-                if is_gemini:
-                    await session.async_send_text('\x1b')
-                    await asyncio.sleep(0.3)
                 await session.async_send_text('1')
                 await asyncio.sleep(0.3)
                 await session.async_send_text('\r')
                 log(f"  [{label}] detected prompt → sent '1 + Enter'")
             else:
-                if is_gemini:
-                    log(f'  [{label}] Gemini: no prompt, not sending Enter (avoid shell mode)')
-                else:
-                    all_ready = False
-                    await session.async_send_text('\r')
-                    log(f'  [{label}] no prompt detected → sent Enter')
+                all_ready = False
+                log(f'  [{label}] not ready yet, not sending Enter')
 
         if all_ready:
             log('All panes ready!')
@@ -301,8 +318,11 @@ async def kick_all():
     else:
         log('Reached max rounds, some panes may still need manual action')
 
-    log('Claude startup coordination: asking all panes to display identity and responsibilities...')
+    log('Claude startup coordination: asking ready panes to display identity and responsibilities...')
     for agent in ('claude', 'codex', 'gemini', 'codex2'):
+        if agent not in ready_agents:
+            log(f'  [Claude → {DISPLAY_NAMES[agent]}] skipped startup message because pane is not ready')
+            continue
         try:
             await send_startup_message(agent, target[agent])
             await asyncio.sleep(0.8)
