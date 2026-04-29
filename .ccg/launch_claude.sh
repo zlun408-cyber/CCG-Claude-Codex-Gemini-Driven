@@ -15,27 +15,51 @@ fi
 RUNTIME_SETTINGS="$DIR/.ccg/claude_runtime_settings.json"
 python3 - "$RUNTIME_SETTINGS" "$PROXY_PORT" <<'PY'
 import json
+import os
 import sys
+from pathlib import Path
 
 path, port = sys.argv[1], sys.argv[2]
+token = (
+    os.environ.get("ANTHROPIC_API_KEY")
+    or os.environ.get("ANTHROPIC_AUTH_TOKEN")
+    or os.environ.get("TOKENHUB_CODEX_API_KEY")
+    or ""
+)
+if not token:
+    try:
+        user_settings = json.loads((Path.home() / ".claude" / "settings.json").read_text())
+        user_env = user_settings.get("env", {})
+        token = user_env.get("ANTHROPIC_API_KEY") or user_env.get("ANTHROPIC_AUTH_TOKEN") or ""
+    except Exception:
+        token = ""
+
+env = {
+    # Claude Code gives settings env higher priority than shell env.
+    # Keep this project-launched Claude pane on the compatibility proxy
+    # even when ~/.claude/settings.json points directly at tokenhubpro.
+    "ANTHROPIC_BASE_URL": f"http://127.0.0.1:{port}",
+    "ANTHROPIC_MODEL": "gpt-5.5",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "gpt-5.5",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "gpt-5.5",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "gpt-5.5",
+    "MAX_THINKING_TOKENS": "0",
+    "CLAUDE_CODE_EFFORT_LEVEL": "unset",
+    "CLAUDE_CODE_DISABLE_THINKING": "1",
+    "DISABLE_THINKING": "1",
+    "CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING": "1",
+    "DISABLE_ADAPTIVE_THINKING": "1",
+    "CLAUDE_CODE_POST_FOR_SESSION_INGRESS_V2": "1",
+    "ENABLE_TOOL_SEARCH": "false",
+}
+if token:
+    # --bare reads API-key auth explicitly; keep the generated runtime file
+    # ignored by git because it may contain a local token.
+    env["ANTHROPIC_API_KEY"] = token
+    env["ANTHROPIC_AUTH_TOKEN"] = token
+
 settings = {
-    "env": {
-        # Claude Code gives settings env higher priority than shell env.
-        # Keep this project-launched Claude pane on the compatibility proxy
-        # even when ~/.claude/settings.json points directly at tokenhubpro.
-        "ANTHROPIC_BASE_URL": f"http://127.0.0.1:{port}",
-        "ANTHROPIC_MODEL": "gpt-5.5",
-        "ANTHROPIC_DEFAULT_OPUS_MODEL": "gpt-5.5",
-        "ANTHROPIC_DEFAULT_HAIKU_MODEL": "gpt-5.5",
-        "ANTHROPIC_DEFAULT_SONNET_MODEL": "gpt-5.5",
-        "MAX_THINKING_TOKENS": "0",
-        "CLAUDE_CODE_EFFORT_LEVEL": "unset",
-        "CLAUDE_CODE_DISABLE_THINKING": "1",
-        "DISABLE_THINKING": "1",
-        "CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING": "1",
-        "DISABLE_ADAPTIVE_THINKING": "1",
-        "CLAUDE_CODE_POST_FOR_SESSION_INGRESS_V2": "1",
-    }
+    "env": env
 }
 with open(path, "w", encoding="utf-8") as fh:
     json.dump(settings, fh, indent=2)
@@ -51,4 +75,12 @@ export DISABLE_THINKING=1
 export CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1
 export DISABLE_ADAPTIVE_THINKING=1
 export CLAUDE_CODE_POST_FOR_SESSION_INGRESS_V2=1
-exec claude --settings "$RUNTIME_SETTINGS" --model gpt-5.5
+export ENABLE_TOOL_SEARCH=false
+SYSTEM_PROMPT="$(
+    {
+        [ -f "$DIR/CLAUDE.md" ] && cat "$DIR/CLAUDE.md"
+        printf '\n\n'
+        [ -f "$DIR/.ccg/AGENTS.md" ] && cat "$DIR/.ccg/AGENTS.md"
+    } 2>/dev/null
+)"
+exec claude --bare --settings "$RUNTIME_SETTINGS" --append-system-prompt "$SYSTEM_PROMPT" --model gpt-5.5

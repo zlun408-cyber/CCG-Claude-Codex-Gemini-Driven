@@ -17,6 +17,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 DROP_KEYS = {"output_config", "temperature", "previous_response_id"}
+SUMMARY_KEYS = {
+    "call_id",
+    "id",
+    "item_reference",
+    "name",
+    "previous_response_id",
+    "tool_use_id",
+    "type",
+}
 
 
 def scrub(value, removed=None, path="$"):
@@ -34,6 +43,113 @@ def scrub(value, removed=None, path="$"):
     if isinstance(value, list):
         return [scrub(item, removed, f"{path}[{index}]") for index, item in enumerate(value)]
     return value
+
+
+def compact(value, max_length=120):
+    text = str(value)
+    if len(text) <= max_length:
+        return text
+    return text[: max_length - 1] + "…"
+
+
+def compact_json(value, max_length=12000):
+    try:
+        text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    except TypeError:
+        text = str(value)
+    if len(text) <= max_length:
+        return text
+    return text[: max_length - 1] + "…"
+
+
+def extract_tool_result_text(block):
+    content = block.get("content", "")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                item_type = item.get("type", "unknown")
+                if item_type == "text":
+                    parts.append(str(item.get("text", "")))
+                elif "text" in item:
+                    parts.append(str(item["text"]))
+                else:
+                    parts.append(f"[{item_type} omitted]")
+        return "\n".join(part for part in parts if part)
+    if content:
+        return str(content)
+    if block.get("is_error"):
+        return "[tool returned an error]"
+    return "[empty tool result]"
+
+
+def text_block(text):
+    return {"type": "text", "text": text}
+
+
+def normalize_tool_history(value):
+    """Convert Claude Code historical tool blocks to text for tokenhubpro.
+
+    tokenhubpro's OpenAI Responses HTTP bridge rejects Anthropic tool_result
+    history because it expects Responses item_reference IDs. Claude Code still
+    executes tools locally; this only changes how prior tool calls/results are
+    represented to the upstream model.
+    """
+    if isinstance(value, dict):
+        block_type = value.get("type")
+        if block_type == "tool_use":
+            name = value.get("name", "unknown")
+            tool_id = value.get("id", "unknown")
+            tool_input = compact_json(value.get("input", {}))
+            return text_block(
+                f"[Claude Code tool call]\n"
+                f"name: {name}\n"
+                f"id: {tool_id}\n"
+                f"input: {tool_input}"
+            )
+        if block_type == "tool_result":
+            tool_id = value.get("tool_use_id", "unknown")
+            result = compact_json(extract_tool_result_text(value), max_length=30000)
+            status = "error" if value.get("is_error") else "ok"
+            return text_block(
+                f"[Claude Code tool result]\n"
+                f"tool_use_id: {tool_id}\n"
+                f"status: {status}\n"
+                f"result: {result}"
+            )
+        return {key: normalize_tool_history(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [normalize_tool_history(item) for item in value]
+    return value
+
+
+def summarize_payload(value, path="$", lines=None, limit=80):
+    if lines is None:
+        lines = []
+    if len(lines) >= limit:
+        return lines
+
+    if isinstance(value, dict):
+        interesting = {key: value.get(key) for key in SUMMARY_KEYS if key in value}
+        if interesting:
+            rendered = ", ".join(f"{key}={compact(val)}" for key, val in sorted(interesting.items()))
+            lines.append(f"{path}: {rendered}")
+        for key, item in value.items():
+            if key in {"authorization", "api_key", "ANTHROPIC_AUTH_TOKEN"}:
+                continue
+            summarize_payload(item, f"{path}.{key}", lines, limit)
+            if len(lines) >= limit:
+                break
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            summarize_payload(item, f"{path}[{index}]", lines, limit)
+            if len(lines) >= limit:
+                break
+    return lines
 
 
 class ProxyHandler(BaseHTTPRequestHandler):
@@ -65,21 +181,26 @@ class ProxyHandler(BaseHTTPRequestHandler):
         body = self.rfile.read(length) if length else b""
         content_type = self.headers.get("content-type", "")
         removed = []
+        summary = []
 
         if body and "json" in content_type:
             try:
-                payload = scrub(json.loads(body), removed)
+                payload = json.loads(body)
+                summary = summarize_payload(payload)
+                payload = normalize_tool_history(payload)
+                payload = scrub(payload, removed)
                 body = json.dumps(payload, separators=(",", ":")).encode()
             except json.JSONDecodeError:
                 pass
 
-        self.forward(body, removed)
+        self.forward(body, removed, summary)
 
     def write_log(self, message):
         print(message, file=sys.stderr, flush=True)
 
-    def forward(self, body, removed=None):
+    def forward(self, body, removed=None, summary=None):
         removed = removed or []
+        summary = summary or []
         url = self.upstream.rstrip("/") + self.path
         headers = {
             key: value
@@ -116,6 +237,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
         except urllib.error.HTTPError as exc:
             data = exc.read()
             self.write_log(f"< {exc.code} {self.command} {self.path} bytes={len(data)}")
+            if exc.code >= 400 and summary:
+                self.write_log("request summary:")
+                for line in summary:
+                    self.write_log(f"  {line}")
             self.send_response(exc.code)
             for key, value in exc.headers.items():
                 if key.lower() not in {"transfer-encoding", "content-encoding", "connection"}:

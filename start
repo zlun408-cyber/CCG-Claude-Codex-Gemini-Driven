@@ -208,9 +208,17 @@ async def kick_all():
             log(f'  [{label}] round {round_num+1} last: {last_lines[:3]}')
 
             # Claude 交互式启动链路对“自动 Enter / 自动确认”比较敏感。
-            # 这里不再主动干预 Claude，只做观察，避免把会话推进到异常状态。
+            # 只处理 bare 模式下明确的 API key 确认框；其他情况不主动干预，
+            # 避免把会话推进到异常状态。
             if is_claude:
-                log(f'  [{label}] skipping auto-input to avoid interfering with Claude startup')
+                if 'do you want to use this api key' in screen:
+                    all_ready = False
+                    await session.async_send_text('1')
+                    await asyncio.sleep(0.3)
+                    await session.async_send_text('\r')
+                    log(f"  [{label}] API key prompt → sent '1 + Enter'")
+                else:
+                    log(f'  [{label}] skipping auto-input to avoid interfering with Claude startup')
                 continue
 
             if is_codex_like:
