@@ -37,20 +37,29 @@ DISPLAY_NAMES = {
     'codex2': 'Codex2',
 }
 STARTUP_BROADCASTS = {
+    'claude': (
+        'Startup role display: 请在当前 Claude pane 直接展示你的身份和工作职责。'
+        '请说明：你是用户代理 / 架构师 / 协调者；负责理解用户需求、拆解任务、'
+        '冻结契约、协调 Codex/Gemini/Codex2、收集汇报并最终向用户总结。'
+        '只在当前窗口直接回复，不要调用其他 pane。'
+    ),
     'codex': (
         'Claude startup coordination: 你已经作为 Codex pane 被拉起。'
-        '请向 Claude 简要说明你的身份、核心工作职责、主要负责的文件/任务类型、'
-        '以及你在遇到 blocker 或完成任务时会如何汇报。'
+        '请在当前 Codex 窗口直接展示你的身份、核心工作职责、主要负责的文件/任务类型、'
+        '以及遇到 blocker 或完成任务时的汇报方式。'
+        '注意：这次只在当前窗口直接回复，不要使用 .ccg/iterm_chat.py，不要转发给 Claude。'
     ),
     'gemini': (
         'Claude startup coordination: 你已经作为 Gemini pane 被拉起。'
-        '请向 Claude 简要说明你的身份、核心工作职责、主要负责的 UI/UX 范围、'
+        '请在当前 Gemini 窗口直接展示你的身份、核心工作职责、主要负责的 UI/UX 范围、'
         '以及需要 Claude 冻结哪些契约后你才开始实现。'
+        '注意：这次只在当前窗口直接回复，不要使用 .ccg/iterm_chat.py，不要转发给 Claude。'
     ),
     'codex2': (
         'Claude startup coordination: 你已经作为 Codex2 verification pane 被拉起。'
-        '请向 Claude 简要说明你的身份、核心工作职责、验证范围、'
+        '请在当前 Codex2 窗口直接展示你的身份、核心工作职责、验证范围、'
         '以及你会如何报告测试命令、结果、风险和建议。'
+        '注意：这次只在当前窗口直接回复，不要使用 .ccg/iterm_chat.py，不要转发给 Claude。'
     ),
 }
 
@@ -292,8 +301,8 @@ async def kick_all():
     else:
         log('Reached max rounds, some panes may still need manual action')
 
-    log('Claude startup coordination: asking teammates to state identity and responsibilities...')
-    for agent in ('codex', 'gemini', 'codex2'):
+    log('Claude startup coordination: asking all panes to display identity and responsibilities...')
+    for agent in ('claude', 'codex', 'gemini', 'codex2'):
         try:
             await send_startup_message(agent, target[agent])
             await asyncio.sleep(0.8)

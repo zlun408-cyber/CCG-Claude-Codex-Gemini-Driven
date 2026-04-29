@@ -86,7 +86,7 @@ cd /path/to/your-project
 ```
 
 This opens an iTerm2 window with four panes by default — Claude, Codex, Gemini, and Codex2 — each running in your project directory.
-After all panes are ready, Claude automatically sends a startup coordination message to Codex, Gemini, and Codex2 asking each agent to state its identity and responsibilities.
+After all panes are ready, each pane automatically displays its role: Claude states its own identity and responsibilities, and Claude sends startup coordination prompts to Codex, Gemini, and Codex2 asking them to state their identities and responsibilities in their own panes.
 
 If your project does not have `CLAUDE.md`, `start` will auto-create one with instructions to read `.ccg/AGENTS.md` and use `.ccg/iterm_chat.py` for Codex, Gemini, and Codex2 coordination.
 
