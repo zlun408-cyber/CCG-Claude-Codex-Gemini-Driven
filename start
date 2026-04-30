@@ -50,7 +50,7 @@ STARTUP_BROADCASTS = {
         '注意：这次只在当前窗口直接回复，不要使用 .ccg/iterm_chat.py，不要转发给 Claude。'
     ),
     'gemini': (
-        'Gemini pane uses a static pane title/badge for startup identity display.'
+        'Gemini pane uses a static startup warning plus pane badge for identity display.'
     ),
     'codex2': (
         'Claude startup coordination: 你已经作为 Codex2 verification pane 被拉起。'
@@ -87,6 +87,12 @@ async def send_startup_message(agent, session):
     log(f"  [Claude → {DISPLAY_NAMES[agent]}] startup identity request sent")
 
 
+async def show_gemini_static_identity(session):
+    # Do not type into Gemini's TUI here: any stdin can become a model prompt.
+    await session.async_set_name('Gemini 前端/UI')
+    log('  [Claude → Gemini] static identity set in pane title')
+
+
 def read_session_stamps():
     result = {}
     for agent in AGENT_ORDER:
@@ -110,13 +116,13 @@ script = f'''tell application "iTerm2"
     set newWindow to (create window with default profile)
 
     tell current session of newWindow
-        set name to "Claude Orchestrator"
+        set name to "Claude"
         write text "bash '{d}/.ccg/launch_claude.sh' '{d}'" & return
         set rightTopSess to (split vertically with default profile)
     end tell
 
     tell rightTopSess
-        set name to "Codex Engineer"
+        set name to "Codex"
         write text "bash '{d}/.ccg/launch_codex.sh' '{d}'" & return
     end tell
 
@@ -125,7 +131,7 @@ script = f'''tell application "iTerm2"
     end tell
 
     tell leftBottomSess
-        set name to "Gemini UI/UX"
+        set name to "Gemini"
         write text "bash '{d}/.ccg/launch_gemini.sh' '{d}'" & return
     end tell
 
@@ -134,7 +140,7 @@ script = f'''tell application "iTerm2"
     end tell
 
     tell rightBottomSess
-        set name to "Codex2 Verification"
+        set name to "Codex2"
         write text "bash '{d}/.ccg/launch_codex2.sh' '{d}'" & return
     end tell
 end tell
@@ -239,6 +245,15 @@ async def kick_all():
             is_gemini = (agent == 'gemini')
             is_codex_like = (agent in ('codex', 'codex2'))
 
+            if is_gemini:
+                if round_num >= 2:
+                    ready_agents.add(agent)
+                    log(f'  [{label}] assumed ready after quiet startup wait')
+                    continue
+                all_ready = False
+                log(f'  [{label}] quiet wait during startup to reduce TUI flicker')
+                continue
+
             try:
                 screen = (await screen_text(session)).lower()
             except Exception as e:
@@ -287,18 +302,6 @@ async def kick_all():
                 log(f'  [{label}] already ready, skipping')
                 continue
 
-            # Gemini's TUI redraws aggressively during onboarding/auth. Do not
-            # send automatic Escape/Enter/confirm keys here; it causes visible
-            # flicker and can bounce the UI between states.
-            if is_gemini:
-                if any(re.search(p, screen) for p in gemini_ready_patterns):
-                    ready_agents.add(agent)
-                    log(f'  [{label}] Gemini ready, skipping')
-                    continue
-                all_ready = False
-                log(f'  [{label}] observing only during startup to avoid TUI flicker')
-                continue
-
             if any(re.search(p, screen) for p in prompt_patterns):
                 all_ready = False
                 await session.async_send_text('1')
@@ -318,7 +321,11 @@ async def kick_all():
     log('Claude startup coordination: asking ready panes to display identity and responsibilities...')
     for agent in ('claude', 'codex', 'gemini', 'codex2'):
         if agent == 'gemini':
-            log('  [Claude → Gemini] skipped startup prompt; Gemini role is shown by pane title/badge')
+            try:
+                await show_gemini_static_identity(target[agent])
+            except Exception as e:
+                log(f'  [Claude → Gemini] static identity display failed: {e}')
+            log('  [Claude → Gemini] skipped startup prompt; Gemini role is shown by startup warning/badge')
             continue
         if agent not in ready_agents:
             log(f'  [Claude → {DISPLAY_NAMES[agent]}] skipped startup message because pane is not ready')

@@ -4,7 +4,7 @@ cd "$DIR" || exit 1
 STAMP_DIR="$DIR/.ccg/.pane_ids"
 mkdir -p "$STAMP_DIR"
 printf '%s\n' "${ITERM_SESSION_ID##*:}" > "$STAMP_DIR/claude.session"
-printf '\033]1337;SetBadgeFormat=Q2xhdWRlIE9yY2hlc3RyYXRvcg==\007'
+printf '\033]1337;SetBadgeFormat=Q2xhdWRl\007'
 PROXY_PORT="${CCG_CLAUDE_PROXY_PORT:-51742}"
 if ! /usr/bin/nc -z 127.0.0.1 "$PROXY_PORT" >/dev/null 2>&1; then
     nohup python3 "$DIR/.ccg/claude_gateway_proxy.py" --port "$PROXY_PORT" \
